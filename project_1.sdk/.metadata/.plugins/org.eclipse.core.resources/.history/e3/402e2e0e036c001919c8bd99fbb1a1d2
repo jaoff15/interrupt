@@ -1,0 +1,86 @@
+/* Xilinx includes. */
+#include "xil_printf.h"
+#include "xparameters.h"
+#include "xgpio.h"
+#include "xil_exception.h"
+#include "xscugic.h"
+
+#define BUTTONS_ID 				XPAR_BUTTONS_DEVICE_ID
+#define LEDS_ID 				XPAR_LEDS_DEVICE_ID
+#define GIC_ID					XPAR_PS7_SCUGIC_0_DEVICE_ID
+#define INTERRUPT_ID			XPAR_FABRIC_BUTTONS_IP2INTC_IRPT_INTR
+#define INTERRUPT_PRIORITY		0xA0
+#define INTERRUPT_TRIGGER		XGPIOPS_IRQ_TYPE_EDGE_RISING
+
+void buttonsISR(void*);
+void initSystem(void);
+
+static XGpio leds_handler;
+XScuGic gic_handle;
+static u32 global_interrupt_mask = 1;
+
+int main(void)
+{
+	initSystem();
+
+	while(1){}
+
+	xil_printf("Exit alert!\r\n");
+
+	return 0;
+}
+
+void initSystem(void)
+{
+	xil_printf("\r\n\nInitialising system\r\n");
+
+	int status;
+
+	xil_printf("   Initialising Global Interrupt Controller...");
+	XScuGic_Config *gic_configuration = XScuGic_LookupConfig(GIC_ID);
+	status = XScuGic_CfgInitialize(&gic_handle, gic_configuration, gic_configuration->CpuBaseAddress);
+	xil_printf(status == XST_SUCCESS ? "done\r\n" : "failed\r\n");
+
+	xil_printf("   Initialising buttons.......................");
+	XGpio button_gpio_handle;
+	XGpio_Config *buttons_configuration = XGpio_LookupConfig(BUTTONS_ID);
+	status = XGpio_CfgInitialize(&button_gpio_handle, buttons_configuration, buttons_configuration->BaseAddress);
+	xil_printf(status == XST_SUCCESS ? "done\r\n" : "failed\r\n");
+
+	xil_printf("   Initialising LEDs..........................");
+	XGpio_Config *leds_configuration = XGpio_LookupConfig(LEDS_ID);
+	status = XGpio_CfgInitialize(&leds_handler, leds_configuration, leds_configuration->BaseAddress);
+	XGpio_SetDataDirection(&leds_handler, 1, 0x0);
+	XGpio_DiscreteWrite(&leds_handler, 1, ~(0x0));
+	xil_printf(status == XST_SUCCESS ? "done\r\n" : "failed\r\n");
+
+	xil_printf("   Connecting interrupt handler...............");
+	status = XScuGic_Connect(&gic_handle, INTERRUPT_ID, (Xil_InterruptHandler)buttonsISR, &button_gpio_handle);
+	xil_printf(status == XST_SUCCESS ? "done\r\n" : "failed\r\n");
+
+	xil_printf("   Enabling interrupts........................");
+	XScuGic_Enable(&gic_handle, INTERRUPT_ID);
+	XGpio_InterruptEnable(&button_gpio_handle, global_interrupt_mask);
+	XGpio_InterruptGlobalEnable(&button_gpio_handle);
+	xil_printf("done\r\n");
+
+	xil_printf("   Initialising exceptions....................");
+	Xil_ExceptionInit();
+	Xil_ExceptionRegisterHandler(XIL_EXCEPTION_ID_IRQ_INT,(Xil_ExceptionHandler)XScuGic_InterruptHandler, &gic_handle);
+	Xil_ExceptionEnable();
+	xil_printf("done\r\n");
+
+	xil_printf("System initialised\r\n\n");
+}
+
+void buttonsISR(void *CallbackRef)
+{
+	XGpio *callback_id = (XGpio *)CallbackRef;
+
+	u32 button_state = XGpio_DiscreteRead(callback_id, 1);
+	u32 leds_state = XGpio_DiscreteRead(&leds_handler, 1);
+
+	XGpio_DiscreteWrite(&leds_handler, 1, leds_state ^ button_state);
+
+	XGpio_InterruptClear(callback_id, global_interrupt_mask);
+}
